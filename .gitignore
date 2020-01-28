@@ -1,0 +1,21 @@
+
+
+# python distribution
+__pycache__
+*egg*
+*.pyc
+
+# Cache directories
+/joblib
+/.pytest_cache
+.vscode
+.ipynb_checkpoints
+
+# Script outputs
+*.pdf
+*.gif
+*.png
+.ipynb_checkpoints
+*.npy
+*.bck
+*.zip
