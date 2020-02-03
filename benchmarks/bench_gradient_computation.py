@@ -15,23 +15,8 @@ BENCH_NAME = "gradient_computations"
 OUTPUT_DIR = os.path.join(os.path.dirname(__file__), 'outputs')
 
 
-def time_gradient(gradient, model, args, n_layers, meta):
-    if gradient == 'analytic':
-        grad = model.gradient_beta_analytic
-    elif gradient == 'autodiff':
-        grad = model.gradient_beta
-    t_start = time()
-    grad(*args, output_layer=n_layers)
-    delta_t = time() - t_start
-
-    return dict(
-        n_layers=n_layers, time=delta_t, gradient=gradient,
-        **meta
-    )
-
-
 def run_benchmark(n_rep=50, max_layers=100, n_probe_layers=20,
-                  gpu=False):
+                  gpu=None):
     """Benchmark for the gradient computation time (analytic vs autodiff)
 
     Parameters:
@@ -45,15 +30,13 @@ def run_benchmark(n_rep=50, max_layers=100, n_probe_layers=20,
         n_layers which are chosen in log-scale between 1 and max_layers.
     n_probe_layers: int (default: 20)
         Number of number of layers chosen in the log-scale.
-    gpu: boolean (default: False)
-        If set to true, will also run the gradient computation on the GPU.
+    gpu: int (default: none)
+        If not None, use GPU number `gpu` to run the gradient computation.
     """
     eps = 1
-    dimensions = dict(n_alpha=1000, n_beta=500, point_dim=2)
+    dimensions = dict(n_alpha=1000, n_beta=500, point_dim=2, n_samples=100)
 
-    devices = ['cpu']
-    if gpu:
-        devices += ['cuda']
+    device = f'cuda:{gpu}' if gpu is not None else None
 
     layers = np.unique(np.logspace(0, np.log(max_layers), n_probe_layers,
                                    dtype=int))
@@ -61,29 +44,26 @@ def run_benchmark(n_rep=50, max_layers=100, n_probe_layers=20,
 
     layers = np.minimum(max_layers, layers)
     results = []
-    for device in devices:
-        for j in range(n_rep):
-            alpha, beta, C, *_ = make_ot(**dimensions, random_state=None)
-            args = check_tensor(alpha, beta, C, device=device)
-            for i, nl in enumerate(layers):
-                progress = (j*n_probe_layers + i) / (n_rep * n_probe_layers)
-                print(f"\rBenchmark gradient computation on {device}: "
-                      f"{progress:.1%}", end='', flush=True)
-                for gradient in ['analytic', 'autodiff']:
-                    model = Sinkhorn(
-                        n_layers=nl, gradient_computation=gradient,
-                        device=device, log_domain=False)
-                    t_start = time()
-                    model.gradient_beta(*args, eps=eps)
-                    delta_t = time() - t_start
-                    results.append(dict(
-                        device=device, gradient=gradient, n_layers=nl,
-                        time=delta_t, **dimensions
-                    ))
+    for j in range(n_rep):
+        alpha, beta, C, *_ = make_ot(**dimensions, random_state=None)
+        args = check_tensor(alpha, beta, C, device=device)
+        for i, nl in enumerate(layers):
+            progress = (j*n_probe_layers + i) / (n_rep * n_probe_layers)
+            print(f"\rBenchmark gradient computation on {device}: "
+                  f"{progress:.1%}", end='', flush=True)
+            for gradient in ['analytic', 'autodiff', 'implicit']:
+                model = Sinkhorn(
+                    n_layers=nl, gradient_computation=gradient,
+                    device=device, log_domain=False)
+                t_start = time()
+                model.gradient_beta(*args, eps=eps)
+                delta_t = time() - t_start
+                results.append(dict(
+                    gradient=gradient, n_layers=nl, time=delta_t, **dimensions
+                ))
 
     df = pd.DataFrame(results)
     tag = f"{datetime.now().strftime('%Y-%m-%d_%Hh%M')}"
-    tag = f"{tag}{'_gpu' if gpu else ''}"
     df.to_pickle(os.path.join(OUTPUT_DIR, f"{BENCH_NAME}_{tag}.pkl"))
 
 
@@ -96,29 +76,30 @@ def plot_benchmark(file_name=None, gpu=False):
         file_name = file_list[-1]
 
     df = pd.read_pickle(file_name)
-    if gpu:
-        df = df[df.device == 'cuda']
-    else:
-        df = df[df.device == 'cpu']
 
     fig, ax = plt.subplots()
-    for gradient in ['analytic', 'autodiff']:
+    for i, gradient in enumerate(['analytic', 'autodiff', 'implicit']):
         curve = df[df.gradient == gradient].groupby('n_layers').time
         y = curve.median()
-        ax.plot(y.index, y, label=gradient)
-        ax.fill_between(y.index, y - curve.std(), y + curve.std(), alpha=.3)
-    # curve = (2 * df[df.gradient == 'analytic'].groupby('n_layers').median())
-    # curve.plot(y='time', ax=ax, label="2x analytic")
+        ax.plot(y.index, y, label=f"$T(g_{i+1})$")
+        ax.fill_between(y.index, y - curve.quantile(.25),
+                        y + curve.quantile(.75), alpha=.3)
+    curve = (3 * df[df.gradient == 'analytic'].groupby('n_layers').median())
+    curve.plot(y='time', ax=ax, label="$3T(g_1)$", color='C0', linestyle='--')
     # curve = (3 * df[df.gradient == 'analytic'].groupby('n_layers').median())
     # curve.plot(y='time', ax=ax, label="3x analytic")
-    plt.legend(bbox_to_anchor=(-.02, 1.02, 1., .1), ncol=3,
-               loc='center', fontsize=12)
+    plt.legend(bbox_to_anchor=(-.02, 1.05, 1., .1), ncol=3,
+               loc='lower center', fontsize=18)
     ax.set_xscale('log')
     ax.set_yscale('log')
-    ax.set_xlim(y.index.min(), y.index.max())
-    # plt.tight_layout()
+    ax.set_ylabel('Runtime [sec]')
+    ax.set_xlabel('Iteration $t$')
+    ax.set_xlim(y.index.min() + 1, y.index.max())
+    # plt.subplots_adjust(.05, .05, .95, .95)
+    plt.tight_layout()
 
-    plt.savefig(os.path.join(OUTPUT_DIR, f"{BENCH_NAME}_timing.pdf"))
+    plt.savefig(os.path.join(OUTPUT_DIR, f"{BENCH_NAME}_timing.pdf"),
+                bbox_inches='tight', pad_inches=0)
     plt.show()
 
 
@@ -127,8 +108,8 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(
         description='')
-    parser.add_argument('--gpu', action='store_true',
-                        help='If present, use GPU computations')
+    parser.add_argument('--gpu', type=int, default=None,
+                        help='If present, use GPU # for computations')
     parser.add_argument('--plot', action='store_true',
                         help='Show the results from the benchmark')
     parser.add_argument('--file', type=str, default=None,
