@@ -4,9 +4,6 @@ import numpy as np
 
 from ..utils import check_random_state
 
-# from .ista import ista
-from ..lista import Lista
-
 
 def make_coding(n_samples=1000, n_atoms=10, n_dim=3, normalize=True,
                 random_state=None):
@@ -109,8 +106,11 @@ def make_sparse_coding(n_samples=1000, n_atoms=10, n_dim=3, reg=.1,
 
 def filter_sparse_set(x, D, lmbd, sparsity_filter="=1"):
 
-    z_hat = Lista(D, n_layers=1000).transform(x, lmbd)
+    # from .ista import ista
     # z_hat, _, _ = ista(D, x, lmbd, max_iter=1000)
+    from ..lista import Lista
+    z_hat = Lista(D, n_layers=1000).transform(x, lmbd)
+
     operator = sparsity_filter[0]
     sparsity = int(sparsity_filter[1:])
     z_sparsity = np.sum(abs(z_hat) > 1e-2, axis=1)

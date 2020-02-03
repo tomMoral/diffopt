@@ -45,3 +45,7 @@ def check_tensor(*arrays, device=None, requires_grad=None):
         result.append(x)
 
     return tuple(result) if n_arrays > 1 else result[0]
+
+
+def get_np(x):
+    return x.clone().detach().cpu().numpy()

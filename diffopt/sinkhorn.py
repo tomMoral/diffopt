@@ -1,8 +1,8 @@
 import torch
 import numpy as np
 
-from adopty.utils import check_tensor
-from adopty._compat import AVAILABLE_CONTEXT
+from diffopt.utils import check_tensor
+from diffopt._compat import AVAILABLE_CONTEXT
 
 
 def log_dot_exp(A, b, eps):
@@ -124,16 +124,16 @@ class Sinkhorn(torch.nn.Module):
                 output = torch.dot(P.view(-1), C.view(-1))
         else:
             if self.log_domain:
-                reg = torch.exp(((-C + f.unsqueeze(-1) + g.unsqueeze(-2)) / eps
-                                 ).logsumexp((-1, -2))).sum()
+                cross = torch.exp(((-C + f.unsqueeze(-1) + g.unsqueeze(-2))
+                                  / eps).logsumexp((-1, -2))).sum()
             else:
                 K = torch.exp(- C / eps)
-                reg = torch.sum(torch.exp(f / eps) *
-                                torch.matmul(torch.exp(g / eps), K.t()))
+                cross = torch.sum(torch.exp(f / eps)
+                                  * torch.matmul(torch.exp(g / eps), K.t()))
 
             output = torch.sum(f * alpha)
             output += torch.sum(g * beta)
-            output -= eps * reg
+            output -= eps * cross
         return output
 
     def score(self, alpha, beta, C, eps, output_layer=None, primal=False):
@@ -212,6 +212,37 @@ class Sinkhorn(torch.nn.Module):
                 if return_loss:
                     loss = self._loss_fn(f, grad, alpha, beta, C, eps,
                                          primal=False)
+        elif self.gradient_computation == 'implicit':
+            with torch.no_grad():
+                n_samples, _ = alpha.shape
+                n, m = C.shape
+                z = torch.zeros((n_samples, n + m), device=alpha.device)
+                H = torch.zeros((n_samples, n+m, n+m), device=alpha.device)
+
+                f, g = self(alpha, beta, C, eps, output_layer=output_layer)
+                dx = g
+                u, v = torch.exp(f / eps), torch.exp(g / eps)
+                K = torch.exp(-C / eps)
+                P = u[:, :, None] * K[None] * v[:, None]
+                z[:, :n] = alpha - u * torch.matmul(v, K.t())
+                z[:, n:] = beta - v * torch.matmul(u, K)
+                bias = z.sum(axis=-1, keepdims=True)
+                z -= bias / (n + m)
+
+                # Compute the Hessian zz and solve h_inv . z
+                H[:, :n, :n] = -torch.diag_embed(P.sum(axis=-1)/eps)
+                H[:, n:, n:] = -torch.diag_embed(P.sum(axis=-2)/eps)
+                H[:, :n, n:] = P / eps
+                H[:, n:, :n] = P.transpose(-2, -1) / eps
+                e, v = torch.symeig(H, eigenvectors=True)
+                e_inv = 1 / e
+                e_inv[e > -1e-12] = 0
+                H_inv = torch.matmul(v, e_inv[..., None] * v.transpose(-1, -2))
+                dz = (H_inv * z[:, None, :]).sum(axis=-1)[:, n:]
+                grad = dx - dz
+                if return_loss:
+                    loss = self._loss_fn(f, g, alpha, beta, C, eps,
+                                         primal=False)
         if grad.shape != beta.shape:
             assert beta.dim() == 1
             grad = grad.sum(axis=0)
@@ -268,18 +299,20 @@ if __name__ == "__main__":
 
     eps = .1
     a, b, C, *_ = make_ot(n_alpha=10, n_beta=30, n_samples=500)
+    a = a[:1]
 
-    n_iters = np.arange(1, 100)
+    n_iters = np.arange(1, 40)
     # Compute true minimizer
     sinkhorn_ana = Sinkhorn(n_layers=1000, log_domain=False,
                             gradient_computation='analytic')
     sinkhorn_auto = Sinkhorn(n_layers=1000, log_domain=False,
                              gradient_computation='autodiff')
+    sinkhorn_impl = Sinkhorn(n_layers=1000, log_domain=False,
+                             gradient_computation='implicit')
     g_star = sinkhorn_ana.gradient_beta(a, b, C, eps)
     f_, g_ = sinkhorn_ana.transform(a, b, C, eps)
-    g1_list = []
-    g2_list = []
     z_diff = []
+    g1_list, g2_list, g3_list = [], [], []
     for n_iter in n_iters:
         print(f"{n_iter/ n_iters.max():7.1%}\r", end='', flush=True)
         f, g = sinkhorn_ana.transform(a, b, C, eps)
@@ -288,14 +321,17 @@ if __name__ == "__main__":
         z_diff.append(diff)
         g1 = sinkhorn_ana.gradient_beta(a, b, C, eps, n_iter)
         g2 = sinkhorn_auto.gradient_beta(a, b, C, eps, n_iter)
+        g3 = sinkhorn_impl.gradient_beta(a, b, C, eps, n_iter)
         g1_list.append(np.linalg.norm((g1 - g_star).ravel()))
         g2_list.append(np.linalg.norm((g2 - g_star).ravel()))
+        g3_list.append(np.linalg.norm((g3 - g_star).ravel()))
     print("done".ljust(10))
 
     g1_list, g2_list = np.array(g1_list), np.array(g2_list)
     import matplotlib.pyplot as plt
     plt.semilogy(n_iters, g1_list, label=r'$\|g_1^t - g^*\|$', linewidth=3)
     plt.semilogy(n_iters, g2_list, label=r'$\|g_2^t - g^*\|$', linewidth=3)
+    plt.semilogy(n_iters, g3_list, label=r'$\|g_3^t - g^*\|$', linewidth=3)
     plt.semilogy(n_iters, z_diff, label=r'$\|z^t - z^*\|$', color='k',
                  linewidth=3, linestyle='dashed')
     x_ = plt.xlabel(r'$t$')
