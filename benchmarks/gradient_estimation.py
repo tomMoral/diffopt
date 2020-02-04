@@ -8,8 +8,10 @@ import matplotlib.pyplot as plt
 
 from diffopt.ridge import Ridge
 from diffopt.logreg import LogReg
-from diffopt.quadratic import Quadratic
+from diffopt.sinkhorn import Sinkhorn
+# from diffopt.quadratic import Quadratic
 from diffopt.utils import check_random_state
+from diffopt.datasets.optimal_transport import make_ot
 
 
 BENCH_NAME = "gradient_estimation"
@@ -46,6 +48,14 @@ def get_quadratic(n_samples=100, n_dim=50, n_features=100, random_state=None):
     return x, A, B, C, u, v
 
 
+def get_ot(n_alpha=100, n_beta=30, point_dim=2, n_samples=1, eps=1e-1,
+           random_state=None):
+    alphas, beta, C, *_ = make_ot(
+        n_alpha=n_alpha, n_beta=n_beta, point_dim=point_dim,
+        n_samples=n_samples, random_state=random_state)
+    return alphas, beta, C, eps
+
+
 def run_benchmark(config):
     log_callbacks = ['z', 'g1', 'g2', 'g3']
 
@@ -55,19 +65,22 @@ def run_benchmark(config):
         pb_func = config[bench]['pb_func']
         pb_args = config[bench]['pb_args']
         class_model = config[bench]['model']
+        model_args = config[bench]['model_args']
         max_layer = config[bench]['max_layer']
         n_iters = np.unique(np.logspace(0, np.log10(max_layer), 50, dtype=int))
         print(f'\r{name} :', end='', flush=True)
 
         # Compute true minimizer
-        model_star = class_model(n_layers=20 * max_layer, algorithm='gd')
-        x, *loss_args = pb_func(**pb_args)
-        g_star = model_star.get_grad_x(x, *loss_args, computation='analytic')
-        z_star, _ = model_star.transform(x, *loss_args)
+        model_star = class_model(n_layers=20 * max_layer, **model_args)
+        loss_args = pb_func(**pb_args)
+        g_star = model_star.get_grad_x(*loss_args, computation='analytic')
+        z_star, _ = model_star.transform(*loss_args)
+        if bench == 'sinkhorn':
+            z_star = z_star[1]
 
-        model = class_model(n_layers=max(n_iters), algorithm='gd')
+        model = class_model(n_layers=max(n_iters), **model_args)
         _, log = model.transform(
-            x, *loss_args, log_iters=n_iters, log_callbacks=log_callbacks,
+            *loss_args, log_iters=n_iters, log_callbacks=log_callbacks,
             requires_grad=True)
 
         z_diff = np.array([np.linalg.norm((rec['z'] - z_star).ravel())
@@ -103,7 +116,7 @@ def plot_benchmark(config, file_name=None):
                                height_ratios=[.05, .95])
 
     for i, bench in enumerate(config):
-        name = config[bench]['name']
+        name = f"({chr(97 + i)}) {config[bench]['name']}"
         b = df[df.bench == bench]
 
         ax = fig.add_subplot(gs[1, i])
@@ -147,39 +160,54 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     config = {
-        'quadratic': {
-            'name': '(a) Quadratic',
-            'pb_func': get_quadratic,
-            'pb_args': dict(n_samples=10, n_dim=50, n_features=100,
-                            random_state=42),
-            'model': Quadratic,
-            'max_layer': 400,
-        },
+        # 'quadratic': {
+        #     'name': 'Quadratic',
+        #     'pb_func': get_quadratic,
+        #     'pb_args': dict(n_samples=10, n_dim=50, n_features=100,
+        #                     random_state=42),
+        #     'model': Quadratic,
+        #     'model_args': dict(algorithm='gd'),
+        #     'max_layer': 400,
+        # },
         'ridge': {
-            'name': '(b) Ridge Regression',
+            'name': 'Ridge Regression',
             'pb_func': get_regression,
             'pb_args': dict(n_samples=1, n_dim=50, n_features=100, reg=None,
                             random_state=29),
             'model': Ridge,
+            'model_args': dict(algorithm='gd'),
             'max_layer': 700,
         },
         'logreg_reg': {
-            'name': '(c) Penalized Logistic Regression',
+            'name': 'Penalized Logistic Regression',
             'pb_func': get_regression,
             'pb_args': dict(n_samples=1, n_dim=50, n_features=100, reg=None,
                             random_state=9),
             'model': LogReg,
+            'model_args': dict(algorithm='gd'),
             'max_layer': 2000,
         },
         'logreg': {
-            'name': '(d) Logistic Regression',
+            'name': 'Logistic Regression',
             'pb_func': get_regression,
             'pb_args': dict(n_samples=1, n_dim=5, n_features=9, reg=0,
                             random_state=8),
             'model': LogReg,
+            'model_args': dict(algorithm='gd'),
             'max_layer': 7000,
         },
+        'sinkhorn': {
+            'name': 'Wasserstein Distance',
+            'pb_func': get_ot,
+            'pb_args': dict(n_alpha=100, n_beta=30, point_dim=2, n_samples=10,
+                            random_state=53),
+            'model': Sinkhorn,
+            'model_args': dict(log_domain=False),
+            'max_layer': 100,
+        },
     }
+
+    make_ot()
 
     if args.plot:
         plot_benchmark(config, file_name=args.file)

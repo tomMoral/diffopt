@@ -65,7 +65,7 @@ def test_logreg_np(n_iter):
 
     # Compute true minimizer
     logreg = LogReg(n_layers=n_iter)
-    z_star = logreg.transform(x, D, reg)
+    z_star, _ = logreg.transform(x, D, reg)
 
     step = 1 / (np.linalg.norm(D, ord=2) ** 2 / 4 / n + reg)
     print(np.linalg.norm(D, ord=2))
@@ -113,14 +113,14 @@ def test_gradient(n_iter, grad, f_grad):
 
     # Compute gradient with default parameters
     logreg_ana = LogReg(n_layers=n_iter, gradient_computation=grad)
-    g_star = logreg_ana.gradient_x(x, D, reg)
+    g_star = logreg_ana.get_grad_x(x, D, reg)
     assert np.allclose(g_np[None], g_star)
 
     # Compute gradient changing the parameter
     with pytest.raises(NotImplementedError):
-        g_star = logreg_ana.gradient_x(x, D, reg, computation='fake')
+        g_star = logreg_ana.get_grad_x(x, D, reg, computation='fake')
 
-    g_star = logreg_ana.gradient_x(x, D, reg, computation=grad)
+    g_star = logreg_ana.get_grad_x(x, D, reg, computation=grad)
     assert np.allclose(g_np[None], g_star)
 
 
@@ -135,7 +135,7 @@ def test_jacobian(n_iter):
 
     # Compute true minimizer
     logreg_ana = LogReg(n_layers=n_iter, gradient_computation='autodiff')
-    z_star, J_star = logreg_ana.transform_with_jacobian(x, D, reg)
+    z_star, J_star, _ = logreg_ana.transform_with_jacobian(x, D, reg)
 
     step = 1 / (np.linalg.norm(D, ord=2) ** 2 / 4 / n + reg)
     auto_jacobian = jacobian(gradient_descent)

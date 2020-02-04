@@ -10,7 +10,7 @@ DEFAULT_CALLBACKS = {'z': lambda z, *_: z}
 
 
 class LogReg(BaseGradientDescent):
-    f"""Sinkhron network for the OT problem
+    f"""Gradient descent network to compute differentiable logreg solution
 
     Parameters
     ----------

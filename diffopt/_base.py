@@ -25,23 +25,16 @@ ALGORITHM = ['gd', 'sgd']
 GRADIENTS = ['analytic', 'autodiff', 'implicit']
 
 
-class BaseGradientDescent(torch.nn.Module):
-    f"""Sinkhron network for the OT problem
+class BaseMinimization(torch.nn.Module):
+    f"""Base for differentiable minimization layer
 
     Parameters
     ----------
     n_layer : int
         Number of layers in the network.
-    gradient_computation : str (default: 'autodiff')
+    gradient_computation : str (default: 'analytic')
         Control how the gradient is computed. The values should be one of
         {{'autodiff', 'analytic'}}.
-    step : int or None (default: None)
-        Step-size for the algorithm to compute z. If set to None, it will
-        be set to:
-            - 1 / L for algorithm='gd'
-            - 1 / 50L for algorithm='sgd'
-    algorithm : str in {{'gd', 'sgd'}}
-        Algorithm to compute the optimal point in the logreg.
     random_state : int, RandomState instance or None (default)
         Determines random number generation for centroid initialization and
         random reassignment. Use an int to make the randomness deterministic.
@@ -56,21 +49,18 @@ class BaseGradientDescent(torch.nn.Module):
         according to the pytorch API (_eg_ 'cpu', 'gpu', 'gpu/1',..).
     """
 
-    def __init__(self, n_layers, gradient_computation='autodiff', step=None,
-                 algorithm='gd', random_state=None, name="Logreg", ctx=None,
-                 verbose=1, device=None):
+    def __init__(self, n_layers, gradient_computation='analytic',
+                 random_state=None, name="Logreg", ctx=None, verbose=1,
+                 device=None):
         if ctx:
             msg = "Context {} is not available on this computer."
             assert ctx in AVAILABLE_CONTEXT, msg.format(ctx)
         else:
             ctx = AVAILABLE_CONTEXT[0]
 
-        assert algorithm in ALGORITHM
         assert gradient_computation in GRADIENTS
 
-        self.step = step
         self.n_layers = n_layers
-        self.algorithm = algorithm
         self.random_state = random_state
         self.gradient_computation = gradient_computation
 
@@ -81,69 +71,8 @@ class BaseGradientDescent(torch.nn.Module):
 
         super().__init__()
 
-    def forward(self, x, *loss_args, output_layer=None, log_iters=None,
-                log_callbacks=DEFAULT_CALLBACKS):
-
-        rng = check_random_state(self.random_state)
-
-        if output_layer is None:
-            output_layer = self.n_layers
-        elif output_layer > self.n_layers:
-            raise ValueError("Requested output from out-of-bound layer "
-                             "output_layer={} (n_layers={})"
-                             .format(output_layer, self.n_layers))
-        if log_iters is None:
-            log_iters = [output_layer]
-
-        # Init the first layer ot zero
-        z = self._get_z0(x, *loss_args)
-
-        # compute a safe step size
-        if self.step is None:
-            step = self._get_default_step(x, *loss_args)
-            get_step = lambda i: step  # noqa E371
-        elif not callable(self.step):
-            # to use a constant step size
-            get_step = lambda i: self.step  # noqa E371
-        else:
-            get_step = self.step
-
-        # Compute a gradient descent
-        log = []
-        n_dim = x.shape[1]
-        id_samples = rng.randint(n_dim, size=output_layer)
-        for id_layer in range(output_layer):
-            if self.algorithm == 'gd':
-                grad_z = self._get_grad_z(z, x, *loss_args)
-            elif self.algorithm == 'sgd':
-                id_sample = id_samples[id_layer]
-                slice_sample = slice(id_sample, id_sample+1)
-                xi = x[:, slice_sample]
-                loss_args_i = self._get_args_i(slice_sample, *loss_args)
-                grad_z = self._get_grad_z(z, xi, *loss_args_i)
-            else:
-                raise NotImplementedError(
-                    f"algorithm={self.algorithm} is not implemented")
-            step_i = get_step(id_layer)
-            z = z - step_i * grad_z
-
-            if (id_layer + 1) % 100 == 0:
-                print(f"{(id_layer + 1) / output_layer:6.1%}" + '\b'*6,
-                      end='', flush=True)
-            if id_layer + 1 in log_iters:
-                log.append({k: get_np(CALLBACKS[k](self, z, x, *loss_args))
-                            for k in log_callbacks})
-
-        if log_iters is not None:
-            return z, log
-        return z, None
-
     @abstractmethod
-    def _get_default_step(self, x, *loss_args):
-        ...
-
-    @abstractmethod
-    def _get_grad_z(self, z, x, *loss_args):
+    def forward(self, x, *loss_args):
         ...
 
     @abstractmethod
@@ -236,11 +165,11 @@ class BaseGradientDescent(torch.nn.Module):
                                 requires_grad=True):
         """Compute the Jacobian of z relative to x.
         """
-        n_samples, n_dim = x.shape
-        _, n_features = self._get_z0(x, *loss_args).shape
-
         x = check_tensor(x, device=self.device, requires_grad=True)
         *loss_args, = check_tensor(*loss_args, device=self.device)
+
+        n_samples, n_dim = x.shape
+        _, n_features = self._get_z0(x, *loss_args).shape
 
         # Contruct the matrix to probe the jacobian
         x = x.repeat(n_features, 1)
@@ -267,3 +196,118 @@ class BaseGradientDescent(torch.nn.Module):
                           log_iters=log_iters, log_callbacks=log_callbacks)
 
         return get_np(z), log
+
+
+class BaseGradientDescent(BaseMinimization):
+    f"""Base for gradient descent minimization layer
+
+    Parameters
+    ----------
+    n_layer : int
+        Number of layers in the network.
+    gradient_computation : str (default: 'analytic')
+        Control how the gradient is computed. The values should be one of
+        {{'autodiff', 'analytic'}}.
+    step : int or None (default: None)
+        Step-size for the algorithm to compute z. If set to None, it will
+        be set to:
+            - 1 / L for algorithm='gd'
+            - 1 / 50L for algorithm='sgd'
+    algorithm : str in {{'gd', 'sgd'}}
+        Algorithm to compute the optimal point in the logreg.
+    random_state : int, RandomState instance or None (default)
+        Determines random number generation for centroid initialization and
+        random reassignment. Use an int to make the randomness deterministic.
+    name : str (default: LogReg)
+        Name of the model.
+    ctx : str or None
+        Context to run the network. Can be in {{{AVAILABLE_CONTEXT}}}
+    verbose : int (default: 1)
+        Verbosity level.
+    device : str or None (default: None)
+        Device on which the model is implemented. This parameter should be set
+        according to the pytorch API (_eg_ 'cpu', 'gpu', 'gpu/1',..).
+    """
+
+    def __init__(self, n_layers, gradient_computation='analytic', step=None,
+                 algorithm='gd', random_state=None, name="Logreg", ctx=None,
+                 verbose=1, device=None):
+
+        assert algorithm in ALGORITHM
+
+        self.step = step
+        self.algorithm = algorithm
+
+        super().__init__(
+            n_layers=n_layers, gradient_computation=gradient_computation,
+            random_state=random_state, name=name, ctx=ctx, verbose=verbose,
+            device=device)
+
+    def forward(self, x, *loss_args, output_layer=None, log_iters=None,
+                log_callbacks=DEFAULT_CALLBACKS):
+
+        rng = check_random_state(self.random_state)
+
+        if output_layer is None:
+            output_layer = self.n_layers
+        elif output_layer > self.n_layers:
+            raise ValueError("Requested output from out-of-bound layer "
+                             "output_layer={} (n_layers={})"
+                             .format(output_layer, self.n_layers))
+        if log_iters is None:
+            log_iters = [output_layer]
+
+        # Init the first layer ot zero
+        z = self._get_z0(x, *loss_args)
+
+        # compute a safe step size
+        if self.step is None:
+            step = self._get_default_step(x, *loss_args)
+            get_step = lambda i: step  # noqa E371
+        elif not callable(self.step):
+            # to use a constant step size
+            get_step = lambda i: self.step  # noqa E371
+        else:
+            get_step = self.step
+
+        # Compute a gradient descent
+        log = []
+        n_dim = x.shape[1]
+        id_samples = rng.randint(n_dim, size=output_layer)
+        for id_layer in range(output_layer):
+            if self.algorithm == 'gd':
+                grad_z = self._get_grad_z(z, x, *loss_args)
+            elif self.algorithm == 'sgd':
+                id_sample = id_samples[id_layer]
+                slice_sample = slice(id_sample, id_sample+1)
+                xi = x[:, slice_sample]
+                loss_args_i = self._get_args_i(slice_sample, *loss_args)
+                grad_z = self._get_grad_z(z, xi, *loss_args_i)
+            else:
+                raise NotImplementedError(
+                    f"algorithm={self.algorithm} is not implemented")
+            step_i = get_step(id_layer)
+            z = z - step_i * grad_z
+
+            if (id_layer + 1) % 100 == 0:
+                print(f"{(id_layer + 1) / output_layer:6.1%}" + '\b'*6,
+                      end='', flush=True)
+            if id_layer + 1 in log_iters:
+                log.append({k: get_np(CALLBACKS[k](self, z, x, *loss_args))
+                            for k in log_callbacks})
+
+        if log_iters is not None:
+            return z, log
+        return z, None
+
+    @abstractmethod
+    def _get_default_step(self, x, *loss_args):
+        ...
+
+    @abstractmethod
+    def _get_z0(self, x, *loss_args):
+        ...
+
+    @abstractmethod
+    def _get_grad_z(self, z, x, *loss_args):
+        ...

@@ -77,18 +77,21 @@ def plot_benchmark(file_name=None, gpu=False):
 
     df = pd.read_pickle(file_name)
 
+    q1, q3 = .25, .75
+
     fig, ax = plt.subplots()
     for i, gradient in enumerate(['analytic', 'autodiff', 'implicit']):
         curve = df[df.gradient == gradient].groupby('n_layers').time
         y = curve.median()
         ax.plot(y.index, y, label=f"$T(g_{i+1})$")
-        ax.fill_between(y.index, y - curve.quantile(.25),
-                        y + curve.quantile(.75), alpha=.3)
-    curve = (3 * df[df.gradient == 'analytic'].groupby('n_layers').median())
-    curve.plot(y='time', ax=ax, label="$3T(g_1)$", color='C0', linestyle='--')
+        ax.fill_between(y.index, y - curve.quantile(q1),
+                        y + curve.quantile(q3), alpha=.3)
+    # curve = (3 * df[df.gradient == 'analytic'].groupby('n_layers').median())
+    # curve.plot(y='time', ax=ax, label="$3T(g_1)$", color='C0',
+    #            linestyle='--')
     # curve = (3 * df[df.gradient == 'analytic'].groupby('n_layers').median())
     # curve.plot(y='time', ax=ax, label="3x analytic")
-    plt.legend(bbox_to_anchor=(-.02, 1.05, 1., .1), ncol=3,
+    plt.legend(bbox_to_anchor=(-.02, 1.02, 1., .1), ncol=3,
                loc='lower center', fontsize=18)
     ax.set_xscale('log')
     ax.set_yscale('log')

@@ -20,7 +20,7 @@ N_INNER_FULL = 500
 
 
 def wasserstein_barycenter(alphas, C, eps, n_outer, n_inner, gradient,
-                           step_size=.1, device=None):
+                           step_size=.1, device=None, meta={}):
     n_samples, n_alpha = alphas.shape
     # Generate the initial barycenter as the uniform distribution
     beta = np.ones(n_alpha) / n_alpha
@@ -33,6 +33,11 @@ def wasserstein_barycenter(alphas, C, eps, n_outer, n_inner, gradient,
     sinkhorn_full = Sinkhorn(
         n_layers=N_INNER_FULL, log_domain=False,
         gradient_computation='analytic', device=device)
+
+    # Warm start the GPU computation
+    G_star, loss = sinkhorn_full.gradient_beta(
+                    alphas, beta, C, eps, return_loss=True,
+                    output_layer=2)
 
     results = []
     it_loss = np.logspace(0, np.log10(n_outer), n_outer//10, dtype=int)
@@ -56,7 +61,7 @@ def wasserstein_barycenter(alphas, C, eps, n_outer, n_inner, gradient,
                 iteration=it, time=delta_t, loss=loss,
                 norm_gstar=np.linalg.norm(G_star.ravel()),
                 g_diff=np.linalg.norm(G_star.ravel()-G.cpu().numpy().ravel()),
-                best=n_inner == N_INNER_FULL
+                best=n_inner == N_INNER_FULL, **meta
             ))
             t_start = time()
 
@@ -90,8 +95,9 @@ def run_benchmark(n_samples=10, n_alpha=100, eps=1, n_outer=300,
 
     device = f'cuda:{gpu}' if gpu is not None else None
 
-    alphas, _, C, *_ = make_ot(n_alpha=n_alpha, n_beta=n_alpha, point_dim=2,
-                               n_samples=n_samples)
+    meta = dict(n_samples=n_samples, n_alpha=n_alpha, n_beta=n_alpha,
+                point_dim=2)
+    alphas, _, C, *_ = make_ot(**meta)
 
     results = []
     max_layers = int(np.log2(max_layers))
@@ -101,13 +107,15 @@ def run_benchmark(n_samples=10, n_alpha=100, eps=1, n_outer=300,
             print(f"Fitting {gradient}[{n_inner}]:", end='', flush=True)
             beta_star, res = wasserstein_barycenter(
                 alphas, C, eps, n_outer=n_outer, n_inner=n_inner,
-                step_size=step_size, gradient=gradient, device=device)
+                step_size=step_size, gradient=gradient, device=device,
+                meta=meta)
             results.extend(res)
 
     print("Fitting optimal barycenter:", end='', flush=True)
     beta_star, res = wasserstein_barycenter(
         alphas, C, eps, n_outer=2 * n_outer, n_inner=N_INNER_FULL,
-        step_size=step_size, gradient='analytic', device=device)
+        step_size=step_size, gradient='analytic', device=device,
+        meta=meta)
     results.extend(res)
 
     df = pd.DataFrame(results)
@@ -126,7 +134,8 @@ def plot_benchmark(file_name=None):
     df = pd.read_pickle(file_name)
 
     df_best = df[df.best]
-    min_loss = df_best.loss.min() - 1e-12
+    eps = 1e-14
+    min_loss = df_best.loss.min() - eps
     df = df[~df.best]
 
     list_n_layers = np.unique(df.n_inner)
@@ -135,11 +144,11 @@ def plot_benchmark(file_name=None):
     # Create a grid of
     fig = plt.figure(figsize=(12.8, 4.8))
     gs = mpl.gridspec.GridSpec(nrows=2, ncols=3,
-                               height_ratios=[.05, .95],
+                               height_ratios=[.075, .925],
                                width_ratios=[.49, .49, .02])
     axes = [fig.add_subplot(gs[1, i]) for i in range(2)]
 
-    styles = {'analytic': '--', 'autodiff': '-'}
+    styles = {'analytic': '-', 'autodiff': ':'}
     cmap = plt.cm.get_cmap('viridis', n_col)
     colors = {k: cmap(i) for i, k in enumerate(list_n_layers)}
 
@@ -166,24 +175,52 @@ def plot_benchmark(file_name=None):
                 np.cumsum(to_plot.time), to_plot.loss - min_loss,
                 label=gradient, color=color, linestyle=style,
                 linewidth=2)
+    axes[0].set_xlabel("Outer iteration $q$")
+    axes[0].set_ylabel("$F(x_q, z_t(x_q)) - F^*$")
+    axes[1].set_xlabel("Time [sec]")
+    axes[0].set_ylim(eps, 1e-2)
+    axes[1].set_ylim(eps, 1e-2)
+    # axes[1].set_ylabel("Outer iteration $q$")
 
     ax = fig.add_subplot(gs[0, :])
     ax.set_axis_off()
     ax.legend(ls_legend_handle, ls_legend_label, ncol=2, loc='center')
 
     # Boundaries are selected between the power of 2 in logscale
+    ax_cb = fig.add_subplot(gs[1, 2])
     boundaries = 2 ** (np.arange(-1, 2 * n_col) / 2)[::2]
     mpl.colorbar.ColorbarBase(
             cmap=plt.get_cmap('viridis', n_col),
             norm=mpl.colors.BoundaryNorm(boundaries, n_col),
-            ticks=list_n_layers, format='%d', ax=fig.add_subplot(gs[1, 2])
+            ticks=list_n_layers, format='%d', ax=ax_cb,
+            label='Inner iterations $t$'
     )
+    ax_cb.yaxis.set_label_position("left")
 
-    plt.tight_layout()
+    plt.subplots_adjust(0.08, 0.13, 0.97, 0.97, wspace=.2, hspace=.1)
     plt.savefig(os.path.join(OUTPUT_DIR, f"{BENCH_NAME}_loss.pdf"))
-    plt.show()
 
-    import IPython; IPython.embed(colors='neutral')
+    fig = plt.figure()
+    min_loss = df_best.loss.min()
+    for i, g in enumerate(np.unique(df.gradient)):
+        curve = []
+        df_g = df[df.gradient == g]
+        for t in np.unique(df.n_inner):
+            df_gt = df_g[df_g.n_inner == t]
+            curve.append((t, df_gt.loss.iloc[-1] - min_loss))
+        curve = np.array(curve)
+        plt.loglog(curve[:, 0], curve[:, 1], f'C{i}',
+                   label=r"$\delta(g_{i+1})$")
+        if g == 'analytic':
+            plt.loglog(curve[:, 0], curve[:, 1] ** 2 / curve[0, 1], f'C{i}--')
+    plt.xlabel(r"Inner iteration $t$")
+    plt.ylabel(r"Final optimization error $\delta$")
+    plt.legend()
+    plt.ylim(1e-12, 1e-7)
+    plt.tight_layout()
+    fig.savefig(os.path.join(OUTPUT_DIR, f"{BENCH_NAME}_delta.pdf"))
+
+    plt.show()
 
 
 if __name__ == "__main__":
