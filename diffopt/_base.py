@@ -171,7 +171,7 @@ class BaseMinimization(torch.nn.Module):
         n_samples, n_dim = x.shape
         _, n_features = self._get_z0(x, *loss_args).shape
 
-        # Contruct the matrix to probe the jacobian
+        # Construct the matrix to probe the jacobian
         x = x.repeat(n_features, 1)
 
         # change jacobian to only select outputs with the first n_samples

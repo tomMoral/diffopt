@@ -11,17 +11,11 @@ from joblib import Parallel, delayed, Memory
 
 
 from diffopt.logreg import LogReg
+from diffopt.utils.viz import make_legend, STYLE
 
 
 BENCH_NAME = "noise_level"
 OUTPUT_DIR = os.path.join(os.path.dirname(__file__), 'outputs')
-
-
-STYLE = {
-    'g1': dict(label=r"$|g_1 - g^*|$", color='C0'),
-    'g2': dict(label=r"$|g_2 - g^*|$", color='C1'),
-    'g3': dict(label=r"$|g_3 - g^*|$", color='C2'),
-}
 
 
 mem = Memory(location='.', verbose=0)
@@ -32,7 +26,7 @@ def run_one(step, id_rep, n_iters, args, args_star, alpha=None, device=None):
     if step == 'decr':
         assert alpha is not None
         print(f"Starting job for step=decr({alpha:.1e}) [rep={id_rep}]")
-        step_ = lambda t: 1 / (1 + t) ** alpha
+        step_ = lambda t: 1 / (1 + t) ** alpha  # noqa E731
     else:
         step_ = step
         print(f"Starting job for step={step:.1e} [rep={id_rep}]")
@@ -70,7 +64,7 @@ def run_one(step, id_rep, n_iters, args, args_star, alpha=None, device=None):
         }
 
 
-def run_benchmark(n_average=10, random_state=None):
+def run_benchmark_noise(n_average=10, random_state=None):
     n, p = 50, 30
     reg = 1 / n
     rng = np.random.RandomState(random_state)
@@ -109,7 +103,7 @@ def run_benchmark(n_average=10, random_state=None):
     df.to_pickle(os.path.join(OUTPUT_DIR, f"{BENCH_NAME}_noise_{tag}.pkl"))
 
 
-def run_benchmark_2(n_average=10, random_state=None):
+def run_benchmark_curve(n_average=10, random_state=None):
     n, p = 50, 30
     reg = 1 / n
     alpha = .8
@@ -148,6 +142,24 @@ def run_benchmark_2(n_average=10, random_state=None):
     df.to_pickle(os.path.join(OUTPUT_DIR, f"{BENCH_NAME}_curve_{tag}.pkl"))
 
 
+def plot_gradient_estimation(df, ax, title=None):
+    n_iters = df.n_iters.mean()
+    for k, style in STYLE.items():
+        k_diff = np.array([v for v in df[k]])
+        quantiles = np.quantile(k_diff, [.1, .5, .9], axis=0)
+        ax.loglog(n_iters, quantiles[1], **style)
+        ax.fill_between(n_iters, quantiles[0], quantiles[2],
+                        color=style['color'], alpha=.3)
+
+    # Format ax_curve
+    ax.set_title(title)
+    ax.set_xscale('log')
+    ax.set_xlabel(r'Iteration $t$')
+    ax.set_yscale('log')
+    ax.set_ylabel(r'')
+    ax.set_xlim(n_iters.min(), n_iters.max())
+
+
 def plot_benchmark(file_name=None):
 
     if file_name is None:
@@ -174,53 +186,73 @@ def plot_benchmark(file_name=None):
     y_q1 = df.groupby('step').quantile(q1)
     y_q3 = df.groupby('step').quantile(q3)
 
-    df_decr = pd.read_pickle(file_name_curve)
-    df_decr = df_decr[df_decr.step == 'decr']
-    n_iters = df_decr.n_iters.mean()
+    df_curve = pd.read_pickle(file_name_curve)
+    steps, alpha = set(df_curve.step), df_curve.alpha.iloc[0]
+    # results = []
+    # for id_rep, rec in df_curve.iterrows():
+    #     for it, g1, g2, g3, z in zip(rec['n_iters'], rec['g1'], rec['g2'],
+    #                                  rec['g3'], rec['z']):
+    #         results.append(
+    #             dict(step=rec['step'], alpha=rec['alpha'],
+    #                  device=rec['device'], id_rep=id_rep,
+    #                  g1=g1, g2=g2, g3=g3, z=z, it=it)
+    #         )
+
+    # df = pd.DataFrame(results)
 
     n_plots = 2
     fig = plt.figure(figsize=(6.4 * n_plots, 7.2))
     gs = mpl.gridspec.GridSpec(nrows=2, ncols=n_plots,
                                height_ratios=[.05, .95])
-    ax_curve = fig.add_subplot(gs[1, 0])
-    ax_noise = fig.add_subplot(gs[1, 1])
-    handles = []
+    ax_curve = fig.add_subplot(gs[1, 1])
+    ax_noise = fig.add_subplot(gs[1, 0])
     for k, style in STYLE.items():
-        handles.append(ax_noise.plot(y.index, y[k], **style)[0])
-        ax_noise.fill_between(y.index, y[k] - y_q1[k],
-                              y[k] + y_q3[k], alpha=.3,
+        ax_noise.plot(y.index, y[k], **style)[0]
+        ax_noise.fill_between(y.index, y_q1[k],
+                              y_q3[k], alpha=.3,
                               color=style['color'])
 
-        ax_curve.loglog(n_iters, df_decr[k].mean(), **style)
-    handles.append(ax_curve.loglog(n_iters, df_decr.z.mean(), 'k--',
-                                   linewidth=6)[0])
-    # Format ax_curve
-    ax_curve.set_title("(a) Decreasing step size")
-    ax_curve.set_xscale('log')
-    ax_curve.set_xlabel(r'Iteration $t$')
-    ax_curve.set_yscale('log')
-    ax_curve.set_ylabel(r'')
-    ax_curve.set_xlim(min(n_iters), max(n_iters))
-
     # Format ax_noise
-    ax_curve.set_title("(a) Constant step size")
+    ax_noise.set_title("(a) Noise Level for\nConstant step size")
     ax_noise.set_xscale('log')
     ax_noise.set_xlabel(r'Step size $\rho$')
     ax_noise.set_yscale('log')
     ax_noise.set_ylabel(r'Noise level $\sigma^2$')
     ax_noise.set_xlim(y.index.min(), y.index.max())
 
+    plot_gradient_estimation(df_curve[df_curve.step == 'decr'], ax_curve,
+                             title="(b) Decreasing step size\n$\\rho_t = "
+                             f"t^{{-\\alpha}}$; $\\alpha = {alpha}$")
+
     # Add legend
-    ax = fig.add_subplot(gs[0, :])
-    ax.set_axis_off()
-    ax.legend(handles, [r'$|g_1^t - g^*|$', r'$|g_2^t - g^*|$',
-                        r'$|g_3^t - g^*|$', r'$|z^t - z^*|$'],
-              loc='center', bbox_to_anchor=(0, .95, 1, .05), ncol=4,
-              fontsize=18)
+    ax_legend = fig.add_subplot(gs[0, :])
+    make_legend(ax_legend)
     plt.tight_layout()
 
     plt.savefig(os.path.join(OUTPUT_DIR, f"{BENCH_NAME}.pdf"),
                 bbox_inches='tight', pad_inches=0)
+
+    n_plots = len(steps)
+    fig = plt.figure(figsize=(6.4 * n_plots, 7.2))
+    gs = mpl.gridspec.GridSpec(nrows=2, ncols=n_plots,
+                               height_ratios=[.05, .95])
+    for i, step in enumerate(steps):
+        ax = fig.add_subplot(gs[1, i])
+        title = (
+            'Decreasing step size\n$\\rho_t = t^{-\\alpha}$; '
+            f'$\\alpha = {alpha}$' if step == 'decr'
+            else f'Constant step size\n$\\rho = {step}$')
+        plot_gradient_estimation(
+            df_curve[df_curve.step == step], ax,
+            title=f"({chr(97 + i)}) {title}")
+    ax_legend = fig.add_subplot(gs[0, :])
+
+    make_legend(ax_legend)
+    plt.tight_layout()
+
+    plt.savefig(os.path.join(OUTPUT_DIR, f"sgd_gradient_estimation.pdf"),
+                bbox_inches='tight', pad_inches=0)
+
     plt.show()
 
 
@@ -246,5 +278,5 @@ if __name__ == "__main__":
     if args.plot:
         plot_benchmark(args.file)
     else:
-        run_benchmark(n_average=args.n_average, random_state=42)
-        run_benchmark_2(n_average=args.n_average, random_state=42)
+        run_benchmark_noise(n_average=args.n_average, random_state=42)
+        run_benchmark_curve(n_average=args.n_average, random_state=42)

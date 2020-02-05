@@ -12,15 +12,12 @@ from diffopt.logreg import LogReg
 from diffopt.sinkhorn import Sinkhorn
 # from diffopt.quadratic import Quadratic
 from diffopt.utils import check_random_state
+from diffopt.utils.viz import make_legend, STYLE
 from diffopt.datasets.optimal_transport import make_ot
 
 
 BENCH_NAME = "gradient_estimation"
 OUTPUT_DIR = os.path.join(os.path.dirname(__file__), 'outputs')
-
-
-mpl.rcParams['xtick.labelsize'] = 18
-mpl.rcParams['ytick.labelsize'] = 18
 
 
 def get_regularized_regression(n_samples=10, n_dim=50, n_features=100,
@@ -60,8 +57,8 @@ def get_quadratic(n_samples=100, n_dim=50, n_features=100, random_state=None):
     return x, A, B, C, u, v
 
 
-def get_ot(n_alpha=100, n_beta=30, point_dim=2, n_samples=1, eps=1e-1,
-           random_state=None):
+def get_optimal_transport_problem(n_alpha=100, n_beta=30, point_dim=2,
+                                  n_samples=1, eps=1e-1, random_state=None):
     alphas, beta, C, *_ = make_ot(
         n_alpha=n_alpha, n_beta=n_beta, point_dim=point_dim,
         n_samples=n_samples, random_state=random_state)
@@ -90,7 +87,7 @@ def run_benchmark(config):
             log_callbacks=['z', 'g1'])
         log_star = log_star[-1]
         z_star, g_star = log_star['z'], log_star['g1']
-        if bench == 'pnorm':
+        if bench == 'p_norm':
             g_star = 0
 
         model = class_model(n_layers=max(n_iters), **model_args)
@@ -106,8 +103,8 @@ def run_benchmark(config):
                             for rec in log])
         g3_diff = np.array([np.linalg.norm((rec['g3'] - g_star).ravel())
                             for rec in log])
-        results.append(dict(bench=bench, g1_diff=g1_diff, g2_diff=g2_diff,
-                            g3_diff=g3_diff, z_diff=z_diff, n_iters=n_iters))
+        results.append(dict(bench=bench, g1=g1_diff, g2=g2_diff, g3=g3_diff,
+                            z=z_diff, n_iters=n_iters))
 
     print("\rBench: done".ljust(40))
     df = pd.DataFrame(results)
@@ -124,39 +121,32 @@ def plot_benchmark(config, file_name=None):
         file_name = file_list[-1]
 
     df = pd.read_pickle(file_name)
+    df.columns = ['bench', 'g1', 'g2', 'g3', 'z', 'n_iters']
 
     n_plots = len(config)
     fig = plt.figure(figsize=(6.4 * n_plots, 7.2))
     gs = mpl.gridspec.GridSpec(nrows=2, ncols=n_plots,
                                height_ratios=[.05, .95])
 
-    for i, bench in enumerate(config):
-        name = f"({chr(97 + i)}) {config[bench]['name']}"
-        b = df[df.bench == bench]
+    for i, (bench, setting) in enumerate(config.items()):
+        name = f"({chr(97 + i)}) {setting['name']}"
+        to_plot = setting['to_plot']
+        bench_ = 'pnorm' if bench == 'p_norm' else bench
+        b = df[df.bench == bench_]
 
         ax = fig.add_subplot(gs[1, i])
         ax.set_title(name)
 
-        n_iters = b.n_iters.iloc[0]
-        g1_diff = b.g1_diff.iloc[0]
-        g2_diff = b.g2_diff.iloc[0]
-        g3_diff = b.g3_diff.iloc[0]
-        z_diff = b.z_diff.iloc[0]
-        ratio = g1_diff[0] / z_diff[0]
+        xlim = (0, max(b.n_iters.iloc[0]))
 
-        xlim = (0, max(n_iters))
+        for k in to_plot:
+            ax.semilogy(
+                b.n_iters.iloc[0], b[k].iloc[0], **STYLE[k])
 
-        handles = []
-        handles.append(ax.semilogy(n_iters, g1_diff, linewidth=6)[0])
-        handles.append(ax.semilogy(n_iters, g2_diff, linewidth=6)[0])
-        if bench != 'pnorm':
-            handles.append(ax.semilogy(n_iters, g3_diff, linewidth=6)[0])
-        handles.append(ax.semilogy(n_iters, z_diff * ratio,
-                                   linewidth=6, color='k', linestyle='--')[0])
         plt.xlabel(r'Iterations $t$', fontsize=24)
         plt.ylabel('')
 
-        if bench == 'pnorm':
+        if bench == 'p_norm':
             # n_iters = n_iters[-len(n_iters) // 2 + 2:]
             # ratio = g1_diff[-1] * max(n_iters) ** 1.5
             # plt.plot(n_iters, ratio / n_iters ** 1.5, 'k--', linewidth=3)
@@ -170,12 +160,9 @@ def plot_benchmark(config, file_name=None):
         plt.xlim(xlim)
         ax.set_xscale(xscale)
 
-    ax = fig.add_subplot(gs[0, :])
-    ax.set_axis_off()
-    ax.legend(handles, [r'$|g_1^t - g^*|$', r'$|g_2^t - g^*|$',
-                        r'$|g_3^t - g^*|$', r'$|z^t - z^*|$'],
-              loc='center', bbox_to_anchor=(0, .95, 1, .05), ncol=4,
-              fontsize=36)
+    ax_legend = fig.add_subplot(gs[0, :])
+    make_legend(ax_legend)
+
     plt.tight_layout()
     plt.savefig(os.path.join(OUTPUT_DIR, f"{BENCH_NAME}.pdf"),
                 bbox_inches='tight', pad_inches=0)
@@ -195,48 +182,52 @@ if __name__ == "__main__":
     config = {
         # 'quadratic': {
         #     'name': 'Quadratic',
-        #     'pb_func': get_quadratic,
-        #     'pb_args': dict(n_samples=10, n_dim=50, n_features=100,
-        #                     random_state=42),
         #     'model': Quadratic,
         #     'model_args': dict(algorithm='gd'),
         #     'max_layer': 400,
+        #     'pb_func': get_quadratic,
+        #     'pb_args': dict(n_samples=10, n_dim=50, n_features=100,
+        #                     random_state=42),
         # },
         'ridge': {
             'name': 'Ridge Regression',
+            'model': Ridge,
+            'max_layer': 700,
+            'model_args': dict(algorithm='gd'),
             'pb_func': get_regularized_regression,
             'pb_args': dict(n_samples=1, n_dim=50, n_features=100, reg=None,
                             random_state=29),
-            'model': Ridge,
-            'model_args': dict(algorithm='gd'),
-            'max_layer': 700,
+            'to_plot': ['z', 'g1', 'g2', 'g3'],
         },
         'logreg_reg': {
             'name': 'Regularized Logistic Regression',
+            'model': LogReg,
+            'max_layer': 2000,
+            'model_args': dict(algorithm='gd'),
             'pb_func': get_regularized_regression,
             'pb_args': dict(n_samples=1, n_dim=50, n_features=100, reg=None,
                             random_state=9),
-            'model': LogReg,
-            'model_args': dict(algorithm='gd'),
-            'max_layer': 2000,
+            'to_plot': ['z', 'g1', 'g2', 'g3'],
         },
         'sinkhorn': {
             'name': 'Wasserstein Distance',
-            'pb_func': get_ot,
+            'model': Sinkhorn,
+            'max_layer': 100,
+            'model_args': dict(log_domain=False),
+            'pb_func': get_optimal_transport_problem,
             'pb_args': dict(n_alpha=100, n_beta=30, point_dim=2, n_samples=10,
                             random_state=53),
-            'model': Sinkhorn,
-            'model_args': dict(log_domain=False),
-            'max_layer': 100,
+            'to_plot': ['z', 'g1', 'g2', 'g3'],
         },
-        'pnorm': {
+        'p_norm': {
             'name': 'Least p-th norm',
+            'model': pNorm,
+            'max_layer': 1000000,
+            'model_args': dict(algorithm='gd', p=4),
             'pb_func': get_regression,
             'pb_args': dict(n_samples=1, n_dim=5, n_features=9,
                             random_state=8),
-            'model': pNorm,
-            'model_args': dict(algorithm='gd', p=4),
-            'max_layer': 1000000,
+            'to_plot': ['z', 'g1', 'g2'],
         },
     }
 

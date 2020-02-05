@@ -101,7 +101,7 @@ if __name__ == "__main__":
         step = None
         max_layer = 10000
     elif algorithm == 'sgd':
-        step = lambda t: 1e-1 / (t+1) ** alpha
+        step = lambda t: 1e-1 / (t+1) ** alpha  # noqa E731
         max_layer = 100000
     else:
         raise NotImplementedError(f"algorithm={algorithm} is not implemented")

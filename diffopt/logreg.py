@@ -138,7 +138,7 @@ if __name__ == "__main__":
         step = None
         max_layer = 1000
     elif algorithm == 'sgd':
-        step = lambda t: 1e-1 / (t+1) ** alpha
+        step = lambda t: 1e-1 / (t+1) ** alpha  # noqa E731
         max_layer = 10000
     else:
         raise NotImplementedError(f"algorithm={algorithm} is not implemented")
@@ -151,7 +151,6 @@ if __name__ == "__main__":
                          algorithm='gd')
     g_star = logreg_star.get_grad_x(x, D, reg)
     z_star, _ = logreg_star.transform(x, D, reg)
-    # z_star, J_star, _ = logreg_star.transform_with_jacobian(x, D, reg)
 
     logreg = LogReg(n_layers=max(n_iters),
                     gradient_computation='analytic',
