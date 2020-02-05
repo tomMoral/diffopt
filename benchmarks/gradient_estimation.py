@@ -7,6 +7,7 @@ from datetime import datetime
 import matplotlib.pyplot as plt
 
 from diffopt.ridge import Ridge
+from diffopt.p_norm import pNorm
 from diffopt.logreg import LogReg
 from diffopt.sinkhorn import Sinkhorn
 # from diffopt.quadratic import Quadratic
@@ -18,14 +19,25 @@ BENCH_NAME = "gradient_estimation"
 OUTPUT_DIR = os.path.join(os.path.dirname(__file__), 'outputs')
 
 
-def get_regression(n_samples=10, n_dim=50, n_features=100, reg=None,
-                   random_state=None):
+mpl.rcParams['xtick.labelsize'] = 18
+mpl.rcParams['ytick.labelsize'] = 18
+
+
+def get_regularized_regression(n_samples=10, n_dim=50, n_features=100,
+                               reg=None, random_state=None):
     if reg is None:
         reg = 1 / n_dim
     rng = check_random_state(random_state)
     D = rng.randn(n_dim, n_features)
     x = rng.randn(n_samples, n_dim)
     return x, D, reg
+
+
+def get_regression(n_samples=10, n_dim=50, n_features=100, random_state=None):
+    rng = check_random_state(random_state)
+    D = rng.randn(n_dim, n_features)
+    x = rng.randn(n_samples, n_dim)
+    return x, D
 
 
 def get_quadratic(n_samples=100, n_dim=50, n_features=100, random_state=None):
@@ -73,10 +85,13 @@ def run_benchmark(config):
         # Compute true minimizer
         model_star = class_model(n_layers=20 * max_layer, **model_args)
         loss_args = pb_func(**pb_args)
-        g_star = model_star.get_grad_x(*loss_args, computation='analytic')
-        z_star, _ = model_star.transform(*loss_args)
-        if bench == 'sinkhorn':
-            z_star = z_star[1]
+        _, log_star = model_star.transform(
+            *loss_args, log_iters=[model_star.n_layers],
+            log_callbacks=['z', 'g1'])
+        log_star = log_star[-1]
+        z_star, g_star = log_star['z'], log_star['g1']
+        if bench == 'pnorm':
+            g_star = 0
 
         model = class_model(n_layers=max(n_iters), **model_args)
         _, log = model.transform(
@@ -129,18 +144,36 @@ def plot_benchmark(config, file_name=None):
         z_diff = b.z_diff.iloc[0]
         ratio = g1_diff[0] / z_diff[0]
 
+        xlim = (0, max(n_iters))
+
         handles = []
-        handles.append(ax.semilogy(n_iters, g1_diff, linewidth=3)[0])
-        handles.append(ax.semilogy(n_iters, g2_diff, linewidth=3)[0])
-        handles.append(ax.semilogy(n_iters, g3_diff, linewidth=3)[0])
+        handles.append(ax.semilogy(n_iters, g1_diff, linewidth=6)[0])
+        handles.append(ax.semilogy(n_iters, g2_diff, linewidth=6)[0])
+        if bench != 'pnorm':
+            handles.append(ax.semilogy(n_iters, g3_diff, linewidth=6)[0])
         handles.append(ax.semilogy(n_iters, z_diff * ratio,
-                                   linewidth=3, color='k', linestyle='--')[0])
+                                   linewidth=6, color='k', linestyle='--')[0])
         plt.xlabel(r'Iterations $t$', fontsize=24)
         plt.ylabel('')
+
+        if bench == 'pnorm':
+            # n_iters = n_iters[-len(n_iters) // 2 + 2:]
+            # ratio = g1_diff[-1] * max(n_iters) ** 1.5
+            # plt.plot(n_iters, ratio / n_iters ** 1.5, 'k--', linewidth=3)
+
+            # ratio = g2_diff[-1] * max(n_iters) ** 3
+            # plt.plot(n_iters, ratio / n_iters ** 3, 'k--', linewidth=3)
+            xscale = 'log'
+            xlim = (1, xlim[1])
+        else:
+            xscale = 'linear'
+        plt.xlim(xlim)
+        ax.set_xscale(xscale)
+
     ax = fig.add_subplot(gs[0, :])
     ax.set_axis_off()
-    ax.legend(handles, [r'$\|g_1^t - g^*\|$', r'$\|g_2^t - g^*\|$',
-                        r'$\|g_3^t - g^*\|$', r'$\|z^t - z^*\|$'],
+    ax.legend(handles, [r'$|g_1^t - g^*|$', r'$|g_2^t - g^*|$',
+                        r'$|g_3^t - g^*|$', r'$|z^t - z^*|$'],
               loc='center', bbox_to_anchor=(0, .95, 1, .05), ncol=4,
               fontsize=36)
     plt.tight_layout()
@@ -171,7 +204,7 @@ if __name__ == "__main__":
         # },
         'ridge': {
             'name': 'Ridge Regression',
-            'pb_func': get_regression,
+            'pb_func': get_regularized_regression,
             'pb_args': dict(n_samples=1, n_dim=50, n_features=100, reg=None,
                             random_state=29),
             'model': Ridge,
@@ -179,22 +212,13 @@ if __name__ == "__main__":
             'max_layer': 700,
         },
         'logreg_reg': {
-            'name': 'Penalized Logistic Regression',
-            'pb_func': get_regression,
+            'name': 'Regularized Logistic Regression',
+            'pb_func': get_regularized_regression,
             'pb_args': dict(n_samples=1, n_dim=50, n_features=100, reg=None,
                             random_state=9),
             'model': LogReg,
             'model_args': dict(algorithm='gd'),
             'max_layer': 2000,
-        },
-        'logreg': {
-            'name': 'Logistic Regression',
-            'pb_func': get_regression,
-            'pb_args': dict(n_samples=1, n_dim=5, n_features=9, reg=0,
-                            random_state=8),
-            'model': LogReg,
-            'model_args': dict(algorithm='gd'),
-            'max_layer': 7000,
         },
         'sinkhorn': {
             'name': 'Wasserstein Distance',
@@ -204,6 +228,15 @@ if __name__ == "__main__":
             'model': Sinkhorn,
             'model_args': dict(log_domain=False),
             'max_layer': 100,
+        },
+        'pnorm': {
+            'name': 'Least p-th norm',
+            'pb_func': get_regression,
+            'pb_args': dict(n_samples=1, n_dim=5, n_features=9,
+                            random_state=8),
+            'model': pNorm,
+            'model_args': dict(algorithm='gd', p=4),
+            'max_layer': 1000000,
         },
     }
 
