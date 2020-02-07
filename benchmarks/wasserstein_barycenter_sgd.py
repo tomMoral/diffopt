@@ -16,7 +16,7 @@ BENCH_NAME = "wasserstein_barycenter_sgd"
 OUTPUT_DIR = os.path.join(os.path.dirname(__file__), 'outputs')
 
 
-N_INNER_FULL = 500
+N_INNER_FULL = 1000
 
 
 def wasserstein_barycenter_sgd(alphas, C, eps, n_epochs, n_inner, gradient,
@@ -28,22 +28,26 @@ def wasserstein_barycenter_sgd(alphas, C, eps, n_epochs, n_inner, gradient,
     alphas, beta, C = check_tensor(alphas, beta, C, device=device)
 
     sinkhorn = Sinkhorn(n_layers=n_inner, log_domain=False,
-                        gradient_computation=gradient, device=device)
+                        gradient_computation=gradient, device=device,
+                        verbose=0)
 
     sinkhorn_full = Sinkhorn(
         n_layers=N_INNER_FULL, log_domain=False,
-        gradient_computation='analytic', device=device)
+        gradient_computation='analytic', device=device, verbose=0)
 
     results = []
-    it_loss = np.logspace(0, np.log10(n_epochs*n_samples),
-                          num=n_epochs*n_samples//10, dtype=int)
+    log_max = np.log10(n_epochs*n_samples)
+    it_loss = np.logspace(0, log_max, num=int(5 * log_max), dtype=int)
     t_start = time()
+    idx_sample = np.random.randint(n_samples, size=n_epochs*n_samples)
     for id_epoch in range(n_epochs):
         print(f"{id_epoch/n_epochs:.1%}".rjust(7, '.') + '\b' * 7,
               end='', flush=True)
         for i in range(n_samples):
             it = id_epoch * n_samples + i
-            G = sinkhorn._gradient_beta(alphas[i], beta, C, eps)
+            id_sample = idx_sample[it]
+            f, g, _ = sinkhorn(alphas, beta, C, eps)
+            G = sinkhorn._get_grad_beta(f, g, alphas[id_sample], beta, C, eps)
             with torch.no_grad():
                 beta *= torch.exp(-step_size * G)
                 beta /= beta.sum()

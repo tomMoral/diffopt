@@ -10,13 +10,14 @@ import matplotlib.pyplot as plt
 
 from diffopt.sinkhorn import Sinkhorn
 from diffopt.utils import check_tensor
+from diffopt.utils.viz import make_legend, STYLES
 from diffopt.datasets.optimal_transport import make_ot
 
 BENCH_NAME = "wasserstein_barycenter"
 OUTPUT_DIR = os.path.join(os.path.dirname(__file__), 'outputs')
 
 
-N_INNER_FULL = 500
+N_INNER_FULL = 1000
 
 
 def wasserstein_barycenter(alphas, C, eps, n_outer, n_inner, gradient,
@@ -28,11 +29,13 @@ def wasserstein_barycenter(alphas, C, eps, n_outer, n_inner, gradient,
     alphas, beta, C = check_tensor(alphas, beta, C, device=device)
 
     sinkhorn = Sinkhorn(n_layers=n_inner, log_domain=False,
-                        gradient_computation=gradient, device=device)
+                        gradient_computation=gradient, device=device,
+                        verbose=0)
 
     sinkhorn_full = Sinkhorn(
         n_layers=N_INNER_FULL, log_domain=False,
-        gradient_computation='analytic', device=device)
+        gradient_computation='analytic', device=device,
+        verbose=0)
 
     # Warm start the GPU computation
     G_star, loss = sinkhorn_full.gradient_beta(
@@ -40,12 +43,14 @@ def wasserstein_barycenter(alphas, C, eps, n_outer, n_inner, gradient,
                     output_layer=2)
 
     results = []
-    it_loss = np.logspace(0, np.log10(n_outer), n_outer//10, dtype=int)
+    it_loss = np.logspace(0, np.log10(n_outer), num=int(4*np.log10(n_outer)),
+                          dtype=int)
     t_start = time()
     for it in range(n_outer):
         print(f"{it/n_outer:.1%}".rjust(7, '.') + '\b' * 7,
               end='', flush=True)
-        G = sinkhorn._gradient_beta(alphas, beta, C, eps)
+        f, g, _ = sinkhorn(alphas, beta, C, eps)
+        G = sinkhorn._get_grad_beta(f, g, alphas, beta, C, eps)
         with torch.no_grad():
             beta *= torch.exp(-step_size * G)
             beta /= beta.sum()
@@ -101,8 +106,9 @@ def run_benchmark(n_samples=10, n_alpha=100, eps=1, n_outer=300,
 
     results = []
     max_layers = int(np.log2(max_layers))
-    for n_inner in np.logspace(0, max_layers, num=max_layers + 1,
-                               base=2, dtype=int):
+    n_iters = np.unique(np.logspace(
+        0, max_layers, num=max_layers + 1, base=2, dtype=int))
+    for n_inner in n_iters:
         for gradient in ['autodiff', 'analytic']:
             print(f"Fitting {gradient}[{n_inner}]:", end='', flush=True)
             beta_star, res = wasserstein_barycenter(
@@ -153,16 +159,19 @@ def plot_benchmark(file_name=None):
     colors = {k: cmap(i) for i, k in enumerate(list_n_layers)}
 
     axes[0].loglog(df_best.iteration, df_best.loss - min_loss,
-                   'k')
-    axes[1].loglog(np.cumsum(df_best.time), df_best.loss - min_loss, 'k')
+                   'k--', linewidth=4)
+    axes[1].loglog(np.cumsum(df_best.time), df_best.loss - min_loss, 'k--',
+                   linewidth=4)
 
-    ls_legend_handle, ls_legend_label = [], []
-    for gradient in np.unique(df.gradient):
+    ls_legend_handle, ls_legend_label = [
+        mpl.lines.Line2D([0], [0], color='k', linestyle='--', lw=4)
+    ], ['$g^*$']
+    for i, gradient in enumerate(np.unique(df.gradient)):
         df_grad = df[df.gradient == gradient]
         style = styles[gradient]
         ls_legend_handle.append(
-            mpl.lines.Line2D([0], [0], color='k', linestyle=style, lw=2))
-        ls_legend_label.append(gradient)
+            mpl.lines.Line2D([0], [0], color='k', linestyle=style, lw=4))
+        ls_legend_label.append(f"$g^{i+1}_t$")
         for n_layers in np.unique(df_grad.n_inner):
             color = colors[n_layers]
             to_plot = df_grad[df_grad.n_inner == n_layers]
@@ -170,21 +179,23 @@ def plot_benchmark(file_name=None):
             axes[0].loglog(
                 to_plot.iteration, to_plot.loss - min_loss,
                 label=gradient, color=color, linestyle=style,
-                linewidth=2)
+                linewidth=4)
             axes[1].loglog(
                 np.cumsum(to_plot.time), to_plot.loss - min_loss,
                 label=gradient, color=color, linestyle=style,
-                linewidth=2)
+                linewidth=4)
     axes[0].set_xlabel("Outer iteration $q$")
-    axes[0].set_ylabel("$F(x_q, z_t(x_q)) - F^*$")
+    axes[0].set_ylabel(r"$\ell(x_q) - \ell^*$")
     axes[1].set_xlabel("Time [sec]")
     axes[0].set_ylim(eps, 1e-2)
+    axes[0].set_xlim(1, 8e2)
+    axes[1].set_xlim(1e-3, 1e2)
     axes[1].set_ylim(eps, 1e-2)
     # axes[1].set_ylabel("Outer iteration $q$")
 
     ax = fig.add_subplot(gs[0, :])
     ax.set_axis_off()
-    ax.legend(ls_legend_handle, ls_legend_label, ncol=2, loc='center')
+    ax.legend(ls_legend_handle, ls_legend_label, ncol=3, loc='center')
 
     # Boundaries are selected between the power of 2 in logscale
     ax_cb = fig.add_subplot(gs[1, 2])
@@ -197,27 +208,48 @@ def plot_benchmark(file_name=None):
     )
     ax_cb.yaxis.set_label_position("left")
 
-    plt.subplots_adjust(0.08, 0.13, 0.97, 0.97, wspace=.2, hspace=.1)
+    plt.subplots_adjust(0.08, 0.13, 0.97, 0.97, wspace=.22, hspace=.15)
     plt.savefig(os.path.join(OUTPUT_DIR, f"{BENCH_NAME}_loss.pdf"))
 
-    fig = plt.figure()
-    min_loss = df_best.loss.min()
+    n_plots = 2
+    fig = plt.figure(figsize=(6.4 * n_plots, 4))
+    gs = mpl.gridspec.GridSpec(nrows=2, ncols=n_plots,
+                               height_ratios=[.05, .95])
+    ax_iter = fig.add_subplot(gs[1, 0])
+    ax_time = fig.add_subplot(gs[1, 1])
+
+    min_loss = df_best.loss.min() - 1e-18
     for i, g in enumerate(np.unique(df.gradient)):
         curve = []
         df_g = df[df.gradient == g]
         for t in np.unique(df.n_inner):
             df_gt = df_g[df_g.n_inner == t]
-            curve.append((t, df_gt.loss.iloc[-1] - min_loss))
+            opt_loss = df_gt.loss.iloc[-1] + 1e-6
+            id_opt = (np.array([l for l in df_gt.loss]) < opt_loss).argmax()
+            dt = np.sum(df_gt.iloc[:id_opt].time)
+            curve.append((t, dt, df_gt.loss.iloc[-1] - min_loss))
         curve = np.array(curve)
-        plt.loglog(curve[:, 0], curve[:, 1], f'C{i}',
-                   label=r"$\delta(g_{i+1})$")
-        if g == 'analytic':
-            plt.loglog(curve[:, 0], curve[:, 1] ** 2 / curve[0, 1], f'C{i}--')
-    plt.xlabel(r"Inner iteration $t$")
-    plt.ylabel(r"Final optimization error $\delta$")
-    plt.legend()
-    plt.ylim(1e-12, 1e-7)
-    plt.tight_layout()
+        curve /= curve[:1]
+        ax_iter.plot(curve[:, 0], curve[:, 2], **STYLES[f'g{i+1}'])
+        ax_time.plot(curve[:, 1], curve[:, 2], **STYLES[f'g{i+1}'])
+        # if g == 'analytic':
+        #     plt.plot(curve[:, 0], curve[:, 1] ** 2 / curve[0, 1], f'C{i}--')
+    ax_iter.set_ylabel(r"Error")
+    ax_iter.set_xlabel(r"Inner iteration $t$")
+    ax_iter.set_xlim(1, 64)
+    ax_iter.set_ylim(1e-4, 1.5)
+    ax_iter.set_yscale('log')
+    ax_time.set_xlabel(r"Time [sec]")
+    ax_time.set_yscale('log')
+    ax_time.set_ylim(1e-4, 1.5)
+    ax_time.set_xlim(1, 5)
+    ax_iter.set_title("(a) Relatively to $t$")
+    ax_time.set_title("(b) Relatively to Time")
+
+    make_legend(fig.add_subplot(gs[0, :]), to_plot=['g1', 'g2'])
+
+    plt.subplots_adjust(left=.08, bottom=.18, right=.99, top=.95,
+                        wspace=.13, hspace=.4)
     fig.savefig(os.path.join(OUTPUT_DIR, f"{BENCH_NAME}_delta.pdf"))
 
     plt.show()

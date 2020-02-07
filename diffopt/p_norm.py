@@ -23,8 +23,10 @@ class pNorm(BaseGradientDescent):
     def _get_default_step(self, x, D):
         with torch.no_grad():
             n_dim, _ = D.shape
-            L_B = np.linalg.norm(get_np(D), ord=2) ** self.p
+            D_ = get_np(D)
+            L_B = np.linalg.norm(D_.T.dot(D_ ** (self.p - 1)), ord=2)
             step = 1 / L_B
+            step = .1
         return step
 
     def _get_z0(self, x, D):
@@ -69,7 +71,16 @@ class pNorm(BaseGradientDescent):
                 C = (p-1) * (res ** (p-2))[:, :, None] * D[None]
                 H = torch.matmul(C, D.t())
 
-                H_inv = torch.pinverse(H)
+                try:
+                    H_inv = torch.pinverse(H)
+                except RuntimeError:
+                    print("ok")
+                    e, v = torch.symeig(H, eigenvectors=True)
+                    e_inv = 1 / e
+                    e_inv[e < 1e-12] = 0
+                    H_inv = torch.matmul(v, e_inv[..., None] *
+                                         v.transpose(-1, -2))
+
                 grad = dx - torch.sum(
                     dz[:, None] * torch.matmul(H_inv, -C), axis=-1)
 

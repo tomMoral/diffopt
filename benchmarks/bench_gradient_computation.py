@@ -3,11 +3,13 @@ import numpy as np
 import pandas as pd
 from glob import glob
 from time import time
+import matplotlib as mpl
 from datetime import datetime
 import matplotlib.pyplot as plt
 
 from diffopt.sinkhorn import Sinkhorn
 from diffopt.utils import check_tensor
+from diffopt.utils.viz import make_legend, STYLES
 from diffopt.datasets.optimal_transport import make_ot
 
 
@@ -77,22 +79,23 @@ def plot_benchmark(file_name=None, gpu=False):
 
     df = pd.read_pickle(file_name)
 
-    q1, q3 = .25, .75
+    q1, q3 = .1, .9
 
-    fig, ax = plt.subplots()
+    n_plots = 1
+    fig = plt.figure(figsize=(6.4 * n_plots, 7.2))
+    gs = mpl.gridspec.GridSpec(nrows=2, ncols=n_plots,
+                               height_ratios=[.05, .95])
+    make_legend(fig.add_subplot(gs[0, :]), to_plot=['g1', 'g2', 'g3'],
+                labels=['$g^1_t$', '$g^2_t$', '$g^3_t$'])
+
+    ax = fig.add_subplot(gs[1, 0])
     for i, gradient in enumerate(['analytic', 'autodiff', 'implicit']):
+        style = STYLES[f"g{i+1}"]
         curve = df[df.gradient == gradient].groupby('n_layers').time
         y = curve.median()
-        ax.plot(y.index, y, label=f"$T(g_{i+1})$")
-        ax.fill_between(y.index, y - curve.quantile(q1),
-                        y + curve.quantile(q3), alpha=.3)
-    # curve = (3 * df[df.gradient == 'analytic'].groupby('n_layers').median())
-    # curve.plot(y='time', ax=ax, label="$3T(g_1)$", color='C0',
-    #            linestyle='--')
-    # curve = (3 * df[df.gradient == 'analytic'].groupby('n_layers').median())
-    # curve.plot(y='time', ax=ax, label="3x analytic")
-    plt.legend(bbox_to_anchor=(-.02, 1.02, 1., .1), ncol=3,
-               loc='lower center', fontsize=18)
+        ax.plot(y.index, y, **style)
+        ax.fill_between(y.index, curve.quantile(q1),
+                        curve.quantile(q3), alpha=.3, color=style['color'])
     ax.set_xscale('log')
     ax.set_yscale('log')
     ax.set_ylabel('Runtime [sec]')

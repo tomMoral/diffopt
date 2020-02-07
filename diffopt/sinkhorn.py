@@ -131,7 +131,7 @@ class Sinkhorn(torch.nn.Module):
                 if err < 1e-10:
                     break
 
-            if (id_layer + 1) % 100 == 0:
+            if self.verbose > 0 and (id_layer + 1) % 100 == 0:
                 print(f"{(id_layer + 1) / output_layer:6.1%}" + '\b'*6,
                       end='', flush=True)
             if id_layer + 1 in log_iters:

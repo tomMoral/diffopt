@@ -11,7 +11,7 @@ from joblib import Parallel, delayed, Memory
 
 
 from diffopt.logreg import LogReg
-from diffopt.utils.viz import make_legend, STYLE
+from diffopt.utils.viz import make_legend, STYLES
 
 
 BENCH_NAME = "noise_level"
@@ -144,11 +144,11 @@ def run_benchmark_curve(n_average=10, random_state=None):
 
 def plot_gradient_estimation(df, ax, title=None):
     n_iters = df.n_iters.mean()
-    for k, style in STYLE.items():
+    for k, style in STYLES.items():
         k_diff = np.array([v for v in df[k]])
-        quantiles = np.quantile(k_diff, [.1, .5, .9], axis=0)
-        ax.loglog(n_iters, quantiles[1], **style)
-        ax.fill_between(n_iters, quantiles[0], quantiles[2],
+        quantiles = np.quantile(k_diff, [.1, .9], axis=0)
+        ax.loglog(n_iters, k_diff.mean(axis=0), **style)
+        ax.fill_between(n_iters, quantiles[0], quantiles[1],
                         color=style['color'], alpha=.3)
 
     # Format ax_curve
@@ -157,7 +157,7 @@ def plot_gradient_estimation(df, ax, title=None):
     ax.set_xlabel(r'Iteration $t$')
     ax.set_yscale('log')
     ax.set_ylabel(r'')
-    ax.set_xlim(n_iters.min(), n_iters.max())
+    ax.set_xlim(1e1, n_iters.max())
 
 
 def plot_benchmark(file_name=None):
@@ -178,11 +178,8 @@ def plot_benchmark(file_name=None):
     df.g2 = [v[0] for v in df.g2]
     df.g3 = [v[0] for v in df.g3]
     df.z = [v[0] for v in df.z]
-    df.g1 **= 2
-    df.g2 **= 2
-    df.g3 **= 2
-    y = df.groupby('step').median()
-    q1, q3 = .25, .75
+    y = df.groupby('step').mean()
+    q1, q3 = .1, .9
     y_q1 = df.groupby('step').quantile(q1)
     y_q3 = df.groupby('step').quantile(q3)
 
@@ -203,10 +200,10 @@ def plot_benchmark(file_name=None):
     n_plots = 2
     fig = plt.figure(figsize=(6.4 * n_plots, 7.2))
     gs = mpl.gridspec.GridSpec(nrows=2, ncols=n_plots,
-                               height_ratios=[.05, .95])
+                               height_ratios=[q1, q3])
     ax_curve = fig.add_subplot(gs[1, 1])
     ax_noise = fig.add_subplot(gs[1, 0])
-    for k, style in STYLE.items():
+    for k, style in STYLES.items():
         ax_noise.plot(y.index, y[k], **style)[0]
         ax_noise.fill_between(y.index, y_q1[k],
                               y_q3[k], alpha=.3,
@@ -217,17 +214,19 @@ def plot_benchmark(file_name=None):
     ax_noise.set_xscale('log')
     ax_noise.set_xlabel(r'Step size $\rho$')
     ax_noise.set_yscale('log')
-    ax_noise.set_ylabel(r'Noise level $\sigma^2$')
+    ax_noise.set_ylabel(r'Noise level')
     ax_noise.set_xlim(y.index.min(), y.index.max())
 
     plot_gradient_estimation(df_curve[df_curve.step == 'decr'], ax_curve,
                              title="(b) Decreasing step size\n$\\rho_t = "
                              f"t^{{-\\alpha}}$; $\\alpha = {alpha}$")
+    ax_curve.set_ylabel(r"$\mathbb E\left[|g^i_t - g^*|\right]$")
 
     # Add legend
     ax_legend = fig.add_subplot(gs[0, :])
     make_legend(ax_legend)
-    plt.tight_layout()
+    plt.subplots_adjust(left=.08, bottom=.13, right=.99, top=.96,
+                        wspace=.22, hspace=.24)
 
     plt.savefig(os.path.join(OUTPUT_DIR, f"{BENCH_NAME}.pdf"),
                 bbox_inches='tight', pad_inches=0)
@@ -245,10 +244,13 @@ def plot_benchmark(file_name=None):
         plot_gradient_estimation(
             df_curve[df_curve.step == step], ax,
             title=f"({chr(97 + i)}) {title}")
+
+        ax.set_ylabel(r"$\mathbb E\left[|g^i_t - g^*|\right]$")
     ax_legend = fig.add_subplot(gs[0, :])
 
     make_legend(ax_legend)
-    plt.tight_layout()
+    plt.subplots_adjust(left=.08, bottom=.1, right=.99, top=.96,
+                        wspace=.22, hspace=.3)
 
     plt.savefig(os.path.join(OUTPUT_DIR, f"sgd_gradient_estimation.pdf"),
                 bbox_inches='tight', pad_inches=0)
